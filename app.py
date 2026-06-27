@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 from streamlit_calendar import calendar
 
-st.set_page_config(page_title="My Calendar", page_icon="📅", layout="wide")
+st.set_page_config(page_title="Multi Calendar", page_icon="📅", layout="wide")
 
 # ====================== Neon Connection ======================
 @st.cache_resource
