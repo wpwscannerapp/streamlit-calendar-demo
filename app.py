@@ -1,179 +1,152 @@
 import streamlit as st
-import sqlite3
+import uuid
 import json
 from datetime import datetime
 from streamlit_calendar import calendar
 
-st.set_page_config(page_title="Full Calendar App", page_icon="📅", layout="wide")
+st.set_page_config(page_title="My Calendar", page_icon="📅", layout="wide")
 
-# ====================== DATABASE SETUP ======================
+# ====================== Neon Connection ======================
+conn = st.connection("neon", type="sql")
+
 def init_db():
-    conn = sqlite3.connect('calendar.db')
-    c = conn.cursor()
-    c.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS events (
             id TEXT PRIMARY KEY,
-            title TEXT,
-            start TEXT,
-            end TEXT,
-            color TEXT,
+            title TEXT NOT NULL,
+            start TEXT NOT NULL,
+            "end" TEXT,
+            color TEXT DEFAULT '#3788d8',
             resourceId TEXT,
-            extendedProps TEXT
+            extended_props TEXT
         )
-    ''')
-    conn.commit()
-    conn.close()
+    """)
 
 def load_events():
-    conn = sqlite3.connect('calendar.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM events")
-    rows = c.fetchall()
-    conn.close()
-    
+    df = conn.query("SELECT * FROM events ORDER BY start")
     events = []
-    for row in rows:
+    for _, row in df.iterrows():
         event = {
-            "id": row[0],
-            "title": row[1],
-            "start": row[2],
-            "end": row[3],
-            "color": row[4],
-            "resourceId": row[5],
+            "id": row["id"],
+            "title": row["title"],
+            "start": row["start"],
+            "color": row["color"],
+            "resourceId": row["resourceid"],
         }
-        if row[6]:
-            event.update(json.loads(row[6]))
+        if row["end"]:
+            event["end"] = row["end"]
+        if row["extended_props"]:
+            event.update(json.loads(row["extended_props"]))
         events.append(event)
     return events
 
-def save_event(event):
-    conn = sqlite3.connect('calendar.db')
-    c = conn.cursor()
-    c.execute('''
-        INSERT OR REPLACE INTO events (id, title, start, end, color, resourceId, extendedProps)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        event.get('id', datetime.now().isoformat()),
-        event['title'],
-        event['start'],
-        event.get('end'),
-        event.get('color', '#3788d8'),
-        event.get('resourceId'),
-        json.dumps({k: v for k, v in event.items() if k not in ['id','title','start','end','color','resourceId']})
+def save_event(event: dict):
+    extended = {k: v for k, v in event.items() 
+                if k not in ['id','title','start','end','color','resourceId']}
+    
+    conn.execute("""
+        INSERT INTO events (id, title, start, "end", color, resourceId, extended_props)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET
+            title = EXCLUDED.title,
+            start = EXCLUDED.start,
+            "end" = EXCLUDED."end",
+            color = EXCLUDED.color,
+            resourceId = EXCLUDED.resourceId,
+            extended_props = EXCLUDED.extended_props
+    """, (
+        event.get("id", str(uuid.uuid4())),
+        event["title"],
+        event["start"],
+        event.get("end"),
+        event.get("color", "#3788d8"),
+        event.get("resourceId"),
+        json.dumps(extended) if extended else None
     ))
-    conn.commit()
-    conn.close()
 
 def delete_event(event_id):
-    conn = sqlite3.connect('calendar.db')
-    c = conn.cursor()
-    c.execute("DELETE FROM events WHERE id=?", (event_id,))
-    conn.commit()
-    conn.close()
+    conn.execute("DELETE FROM events WHERE id = %s", (event_id,))
 
-# Initialize DB and load events
+# Initialize
 init_db()
-if 'events' not in st.session_state:
+if "events" not in st.session_state:
     st.session_state.events = load_events()
 
-# ====================== SIDEBAR ======================
-st.sidebar.header("📅 Full Calendar App")
+# ====================== UI ======================
+st.title("📅 My Full Calendar")
 
-mode = st.sidebar.selectbox(
-    "View Mode",
-    ["daygrid", "timegrid", "timeline", "resource-daygrid", "resource-timegrid", "resource-timeline", "list", "multimonth"],
-    index=0
-)
+mode = st.selectbox("Mode", [
+    "daygrid", "timegrid", "timeline", 
+    "resource-daygrid", "resource-timegrid", "resource-timeline", 
+    "list", "multimonth"
+], index=0)
 
-# Add new event form
-st.sidebar.subheader("➕ Add New Event")
-with st.sidebar.form("new_event"):
-    title = st.text_input("Event Title")
-    start_date = st.date_input("Start Date")
-    start_time = st.time_input("Start Time", value=datetime.strptime("09:00", "%H:%M").time())
-    end_date = st.date_input("End Date", value=start_date)
-    end_time = st.time_input("End Time", value=datetime.strptime("10:00", "%H:%M").time())
-    
-    color = st.color_picker("Color", "#3788d8")
-    resource = st.selectbox("Resource", [r["title"] for r in calendar_resources]) if 'calendar_resources' in globals() else None
-    
-    submitted = st.form_submit_button("Add Event")
-    if submitted and title:
-        start = f"{start_date}T{start_time}"
-        end = f"{end_date}T{end_time}"
-        new_event = {
-            "title": title,
-            "start": start,
-            "end": end,
-            "color": color,
-            "resourceId": resource
-        }
-        save_event(new_event)
-        st.session_state.events = load_events()
-        st.success("Event added!")
-        st.rerun()
+# Add Event (Sidebar)
+with st.sidebar:
+    st.header("➕ Add Event")
+    with st.form("add_event"):
+        title = st.text_input("Event Title")
+        col1, col2 = st.columns(2)
+        with col1:
+            sdate = st.date_input("Start Date")
+            stime = st.time_input("Start Time", datetime.strptime("09:00", "%H:%M").time())
+        with col2:
+            edate = st.date_input("End Date", sdate)
+            etime = st.time_input("End Time", datetime.strptime("10:00", "%H:%M").time())
+        
+        color = st.color_picker("Color", "#FF4B4B")
+        resourceId = st.selectbox("Room/Resource", ["a","b","c","d","e","f"])
+        
+        if st.form_submit_button("Save Event"):
+            if title:
+                new_event = {
+                    "title": title,
+                    "start": f"{sdate}T{stime}",
+                    "end": f"{edate}T{etime}",
+                    "color": color,
+                    "resourceId": resourceId
+                }
+                save_event(new_event)
+                st.session_state.events = load_events()
+                st.success("Event saved!")
+                st.rerun()
 
-if st.sidebar.button("🔄 Refresh Events"):
-    st.session_state.events = load_events()
-    st.rerun()
-
-# ====================== CALENDAR OPTIONS ======================
+# Calendar Resources (customize as needed)
 calendar_resources = [
     {"id": "a", "building": "Building A", "title": "Room A"},
     {"id": "b", "building": "Building A", "title": "Room B"},
-    # ... add more
+    {"id": "c", "building": "Building B", "title": "Room C"},
+    # Add more...
 ]
 
 calendar_options = {
     "editable": True,
-    "navLinks": True,
     "selectable": True,
+    "navLinks": True,
     "resources": calendar_resources,
     "resourceGroupField": "building",
+    # You can expand this with mode-specific options like in your original demo
 }
 
-# Dynamic options based on mode (same logic as your demo, expanded)
-if "resource" in mode:
-    # ... (copy and adapt from your original demo)
-    pass
-else:
-    # ... adapt other modes
-
-# ====================== RENDER CALENDAR ======================
 state = calendar(
     events=st.session_state.events,
     options=calendar_options,
     custom_css="""
-    .fc-event-past { opacity: 0.8; }
-    .fc-event-time { font-style: italic; }
-    .fc-event-title { font-weight: 700; }
+        .fc-event-past { opacity: 0.8; }
+        .fc-event-title { font-weight: 700; }
     """,
-    key=mode + "_full",
+    key=mode
 )
 
-# ====================== HANDLE CALLBACKS ======================
+# Handle clicks
 if state.get("eventClick"):
-    event = state["eventClick"]["event"]
-    st.info(f"Clicked: {event['title']}")
+    ev = state["eventClick"]["event"]
+    st.info(f"**Clicked:** {ev['title']} ({ev.get('start')})")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🗑️ Delete Event"):
-            delete_event(event['id'])
-            st.session_state.events = load_events()
-            st.success("Event deleted")
-            st.rerun()
-    with col2:
-        # Edit form would go here
-        pass
+    if st.button("🗑️ Delete this event", type="primary"):
+        delete_event(ev["id"])
+        st.session_state.events = load_events()
+        st.success("Event deleted")
+        st.rerun()
 
-if state.get("select"):
-    st.success(f"Selected range: {state['select']['start']} to {state['select']['end']}")
-    # Pre-fill add form or auto-create
-
-if state.get("eventsSet"):
-    # Optional: sync back if drag/drop
-    pass
-
-st.write("### Raw State (for debugging)")
-st.json(state)
+st.caption("✅ Connected to Neon Postgres")
