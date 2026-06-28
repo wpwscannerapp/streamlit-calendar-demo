@@ -49,11 +49,7 @@ def load_resources():
         cur.execute("SELECT * FROM resources ORDER BY id")
         rows = cur.fetchall()
     if not rows:
-        defaults = [
-            ("a", "Room A", "Building A", "#FF4B4B"),
-            ("b", "Room B", "Building A", "#3D9DF3"),
-            ("c", "Conference Room", "Building B", "#3DD56D")
-        ]
+        defaults = [("a", "Room A", "Building A", "#FF4B4B"), ("b", "Room B", "Building A", "#3D9DF3"), ("c", "Conference Room", "Building B", "#3DD56D")]
         with get_cursor() as cur:
             for d in defaults:
                 cur.execute("INSERT INTO resources VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", d)
@@ -62,14 +58,8 @@ def load_resources():
 
 def save_resource(res):
     with get_cursor() as cur:
-        cur.execute("""
-            INSERT INTO resources (id, title, building, color)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET 
-                title = EXCLUDED.title,
-                building = EXCLUDED.building,
-                color = EXCLUDED.color
-        """, (res["id"], res["title"], res.get("building", "General"), res["color"]))
+        cur.execute("INSERT INTO resources (id, title, building, color) VALUES (%s,%s,%s,%s) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title, building=EXCLUDED.building, color=EXCLUDED.color", 
+                   (res["id"], res["title"], res.get("building", "General"), res["color"]))
 
 def load_events():
     with get_cursor() as cur:
@@ -103,14 +93,36 @@ def delete_event(event_id):
     with get_cursor() as cur:
         cur.execute("DELETE FROM events WHERE id = %s", (event_id,))
 
-# ====================== Init ======================
+# Recurrence Generator
+def generate_recurring(base_event, rec_type, interval=1, count=12):
+    instances = []
+    try:
+        start = datetime.fromisoformat(base_event["start"].replace("Z", "+00:00"))
+        end_delta = datetime.fromisoformat(base_event.get("end", base_event["start"]).replace("Z", "+00:00")) - start
+        for i in range(count):
+            if rec_type == "daily":
+                delta = timedelta(days=i * interval)
+            elif rec_type == "weekly":
+                delta = timedelta(weeks=i * interval)
+            else:  # monthly
+                delta = timedelta(days=i * 30 * interval)
+            new_event = base_event.copy()
+            new_event["id"] = f"{base_event.get('id','')}_{i}"
+            new_event["start"] = (start + delta).isoformat()
+            new_event["end"] = (start + delta + end_delta).isoformat()
+            instances.append(new_event)
+    except:
+        instances = [base_event]
+    return instances
+
+# Init
 init_db()
 if "resources" not in st.session_state:
     st.session_state.resources = load_resources()
 if "events" not in st.session_state:
     st.session_state.events = load_events()
 
-# ====================== Sidebar ======================
+# Sidebar
 with st.sidebar:
     st.header("Resources")
     for i, r in enumerate(st.session_state.resources):
@@ -125,7 +137,6 @@ with st.sidebar:
             if new_color != r["color"]:
                 r["color"] = new_color
                 save_resource(r)
-    
     if st.button("➕ Add Resource"):
         new_id = chr(97 + len(st.session_state.resources))
         new_res = {"id": new_id, "title": f"New Resource", "building": "General", "color": "#999999"}
@@ -146,9 +157,8 @@ with st.sidebar:
             edate = st.date_input("End Date", sdate)
             etime = st.time_input("End Time", datetime.strptime("10:00", "%H:%M").time())
         
-        resource_options = [r["id"] for r in st.session_state.resources]
-        resourceId = st.selectbox("Resource", resource_options, 
-                                 format_func=lambda x: next(r["title"] for r in st.session_state.resources if r["id"] == x))
+        resourceId = st.selectbox("Resource", [r["id"] for r in st.session_state.resources],
+                                 format_func=lambda x: next((r["title"] for r in st.session_state.resources if r["id"] == x), x))
         recurrence = st.selectbox("Recurrence", ["None", "Daily", "Weekly", "Monthly"])
         
         if st.form_submit_button("Save Event"):
@@ -158,69 +168,58 @@ with st.sidebar:
                     "start": f"{sdate}T{stime}",
                     "end": f"{edate}T{etime}",
                     "resourceId": resourceId,
-                    "color": next(r["color"] for r in st.session_state.resources if r["id"] == resourceId)
+                    "color": next((r["color"] for r in st.session_state.resources if r["id"] == resourceId), "#3788d8")
                 }
-                if address or notes:
-                    base["address"] = address
-                    base["notes"] = notes
+                if address: base["address"] = address
+                if notes: base["notes"] = notes
+                
                 if recurrence != "None":
-                    base["recurrence"] = {"type": recurrence.lower()}
-                    # Simple recurrence generation
-                    for i in range(12):
-                        inst = base.copy()
-                        inst["id"] = f"{base.get('id', uuid.uuid4())}_{i}"
-                        # For simplicity, add 7 days for weekly, etc. (expand as needed)
+                    instances = generate_recurring(base, recurrence.lower())
+                    for inst in instances:
                         save_event(inst)
                 else:
                     save_event(base)
+                
                 st.session_state.events = load_events()
-                st.success("✅ Event saved!")
+                st.success("✅ Event(s) saved!")
                 st.rerun()
 
-# ====================== Calendar ======================
+# Calendar
 calendar_resources = [{"id": r["id"], "title": r["title"], "building": r.get("building", "General")} for r in st.session_state.resources]
 
 state = calendar(
     events=st.session_state.events,
-    options={
-        "editable": True,
-        "selectable": True,
-        "navLinks": True,
-        "resources": calendar_resources,
-        "resourceGroupField": "building"
-    },
-    custom_css="""
-        .fc-event-past { opacity: 0.8; }
-        .fc-event-title { font-weight: 700; }
-    """,
+    options={"editable": True, "resources": calendar_resources, "resourceGroupField": "building"},
+    custom_css=".fc-event-past { opacity: 0.8; } .fc-event-title { font-weight: 700; }",
     key="multi_calendar"
 )
 
-# Event Click
 if state.get("eventClick"):
     ev = state["eventClick"]["event"]
-    st.subheader(f"✏️ {ev['title']}")
-    st.write(f"**Resource:** {next((r['title'] for r in st.session_state.resources if r['id'] == ev.get('resourceId')), 'Unknown')}")
-    if ev.get("address"): st.write(f"**Address:** {ev['address']}")
+    st.subheader(f"✏️ {ev.get('title', 'Event')}")
+    st.write(f"**Location:** {ev.get('address', 'Not set')}")
     if ev.get("notes"): st.write(f"**Notes:** {ev['notes']}")
     
     with st.form("edit_event"):
-        new_title = st.text_input("Title", ev["title"])
+        new_title = st.text_input("Title", ev.get("title", ""))
         new_address = st.text_input("Address", ev.get("address", ""))
         new_notes = st.text_area("Notes", ev.get("notes", ""))
-        if st.form_submit_button("Save Changes"):
-            updated = ev.copy()
-            updated["title"] = new_title
-            updated["address"] = new_address
-            updated["notes"] = new_notes
-            save_event(updated)
-            st.session_state.events = load_events()
-            st.success("Updated!")
-            st.rerun()
-        if st.form_submit_button("🗑️ Delete", type="primary"):
-            delete_event(ev["id"])
-            st.session_state.events = load_events()
-            st.success("Deleted!")
-            st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.form_submit_button("Save Changes"):
+                updated = ev.copy()
+                updated["title"] = new_title
+                updated["address"] = new_address
+                updated["notes"] = new_notes
+                save_event(updated)
+                st.session_state.events = load_events()
+                st.success("Updated!")
+                st.rerun()
+        with col2:
+            if st.form_submit_button("Delete", type="primary"):
+                delete_event(ev["id"])
+                st.session_state.events = load_events()
+                st.success("Deleted!")
+                st.rerun()
 
-st.caption("Multi Calendar • Persistent Resources & Notes")
+st.caption("Multi Calendar with Recurring Events • Neon Postgres")
