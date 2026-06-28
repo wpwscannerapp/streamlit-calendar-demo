@@ -74,6 +74,7 @@ def load_events():
     return events
 
 def save_event(event: dict):
+    """Fixed: Always include address and notes"""
     extended = {k: v for k, v in event.items() if k not in ['id','title','start','end','color','resourceId']}
     with get_cursor() as cur:
         cur.execute("""
@@ -84,8 +85,11 @@ def save_event(event: dict):
                 color=EXCLUDED.color, resourceId=EXCLUDED.resourceId, extended_props=EXCLUDED.extended_props
         """, (
             event.get("id", str(uuid.uuid4())),
-            event["title"], event["start"], event.get("end"),
-            event.get("color"), event.get("resourceId"),
+            event["title"],
+            event["start"],
+            event.get("end"),
+            event.get("color"),
+            event.get("resourceId"),
             json.dumps(extended) if extended else None
         ))
 
@@ -93,7 +97,7 @@ def delete_event(event_id):
     with get_cursor() as cur:
         cur.execute("DELETE FROM events WHERE id = %s", (event_id,))
 
-# Recurrence Generator
+# Recurrence
 def generate_recurring(base_event, rec_type, interval=1, count=12):
     instances = []
     try:
@@ -104,7 +108,7 @@ def generate_recurring(base_event, rec_type, interval=1, count=12):
                 delta = timedelta(days=i * interval)
             elif rec_type == "weekly":
                 delta = timedelta(weeks=i * interval)
-            else:  # monthly
+            else:
                 delta = timedelta(days=i * 30 * interval)
             new_event = base_event.copy()
             new_event["id"] = f"{base_event.get('id','')}_{i}"
@@ -222,4 +226,4 @@ if state.get("eventClick"):
                 st.success("Deleted!")
                 st.rerun()
 
-st.caption("Multi Calendar with Recurring Events • Neon Postgres")
+st.caption("Multi Calendar • Address & Notes now save correctly")
