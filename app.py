@@ -8,7 +8,7 @@ from streamlit_calendar import calendar
 st.set_page_config(page_title="Multi Calendar", page_icon="📅", layout="wide")
 st.title("📅 Multi Calendar")
 
-# ====================== Database Connection ======================
+# ====================== Database ======================
 def get_db_connection():
     if 'db_conn' not in st.session_state:
         conn = psycopg2.connect(
@@ -77,7 +77,12 @@ def load_events():
     return events
 
 def save_event(event: dict):
-    extended = {k: v for k, v in event.items() if k not in ['id','title','start','end','color','resourceId']}
+    """Fixed: Properly handles address and notes"""
+    extended = {}
+    for key in ['address', 'notes', 'recurrence']:
+        if key in event:
+            extended[key] = event.pop(key)
+    
     with get_cursor() as cur:
         cur.execute("""
             INSERT INTO events (id, title, start, "end", color, resourceId, extended_props)
@@ -87,8 +92,11 @@ def save_event(event: dict):
                 color=EXCLUDED.color, resourceId=EXCLUDED.resourceId, extended_props=EXCLUDED.extended_props
         """, (
             event.get("id", str(uuid.uuid4())),
-            event["title"], event["start"], event.get("end"),
-            event.get("color"), event.get("resourceId"),
+            event.get("title"),
+            event.get("start"),
+            event.get("end"),
+            event.get("color"),
+            event.get("resourceId"),
             json.dumps(extended) if extended else None
         ))
 
@@ -184,7 +192,7 @@ with st.sidebar:
                     save_event(base)
                 
                 st.session_state.events = load_events()
-                st.success("✅ Event(s) saved!")
+                st.success("✅ Event saved!")
                 st.rerun()
 
 # ====================== Calendar ======================
